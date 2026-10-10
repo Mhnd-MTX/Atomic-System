@@ -1,0 +1,4 @@
+project_id = "atomic-coders-team-hub"
+
+[functions.member-login]
+verify_jwt = false
