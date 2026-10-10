@@ -4,10 +4,10 @@ export default {
   theme: {
     extend: {
       colors: {
-        ink: '#101512',
-        acid: '#d8ff48',
+        ink: '#080b11',
+        acid: '#078ff1',
         coral: '#ff6f64',
-        mint: '#68e5b2',
+        mint: '#20b7e8',
       },
     },
   },

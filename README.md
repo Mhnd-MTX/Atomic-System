@@ -11,7 +11,7 @@ npm install
 npm run dev
 ```
 
-Without Supabase environment variables, the workspace opens in demo mode. Use any listed member name with `atomic2025`, or use the leader/member preview buttons. Demo changes stay in memory and reset when the page reloads.
+Without Supabase environment variables, the workspace opens in demo mode. Use any listed member name with `atomic2025`, or use the leader/member preview buttons. Demo changes, including creating, editing, and removing tasks, stay in memory and reset when the page reloads.
 
 ## Supabase setup
 
@@ -60,4 +60,4 @@ npm run build
 
 Publish the generated `dist/` directory to any static host (for example, Vercel or Netlify), set the two `VITE_SUPABASE_*` build environment variables there, and configure SPA fallback so `/leader`, `/dashboard`, `/leaderboard`, and `/activity` serve `index.html`. Database tables, row-level security, cron scoring, and Edge Functions live in `supabase/`.
 
-The `password_hash` profile column exists for compatibility with the requested schema, but passwords must only be handled by Supabase Auth. The generated atomic mark is used because no logo asset was present in the provided workspace.
+The `password_hash` profile column exists for compatibility with the requested schema, but passwords must only be handled by Supabase Auth. The supplied `Logo.png` provides the workspace branding and blue color palette.

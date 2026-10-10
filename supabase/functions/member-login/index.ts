@@ -3,6 +3,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, apikey, content-type, x-client-info',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
 Deno.serve(async (request) => {
@@ -18,10 +19,11 @@ Deno.serve(async (request) => {
     const anonKey = Deno.env.get('SUPABASE_ANON_KEY')!
     const admin = createClient(url, serviceKey, { auth: { persistSession: false } })
     const auth = createClient(url, anonKey, { auth: { persistSession: false } })
+    const namePattern = name.trim().replace(/[\\%_]/g, '\\$&')
     const { data: profile, error: lookupError } = await admin
       .from('team_members')
       .select('id,name,email,role,red_points,green_points,avatar')
-      .eq('name', name.trim())
+      .ilike('name', namePattern)
       .maybeSingle()
 
     if (lookupError || !profile) {

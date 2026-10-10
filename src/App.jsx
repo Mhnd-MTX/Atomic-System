@@ -3,12 +3,13 @@ import {
   Activity, ArrowDownRight, ArrowUpRight, Atom, Bell, Check, CheckCheck,
   ChevronDown, ChevronRight, CircleHelp, Clock3, Command, ExternalLink,
   FilePlus2, Filter, LayoutDashboard, ListTodo, LogOut, Menu, Moon, MoreHorizontal,
-  Plus, Search, Settings2, ShieldCheck, Sun, Trash2, Users, X, Zap,
+  Pencil, Plus, Search, Settings2, ShieldCheck, Sun, Trash2, Users, X, Zap,
 } from 'lucide-react'
 import {
   Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
 import { isSupabaseConfigured, supabase } from './lib/supabase.js'
+import logo from '../Logo.png'
 
 const initialMembers = [
   { id: 'm1', name: 'Maya Chen', email: 'maya@atomic.dev', role: 'leader', green_points: 18, red_points: 2, avatar: 'MC' },
@@ -47,7 +48,7 @@ function countdown(deadline, now = Date.now()) {
 
 function Brand({ compact = false }) {
   return <div className={`brand-lockup ${compact ? 'brand-compact' : ''}`}>
-    <span className="brand-symbol"><Atom size={21} strokeWidth={1.6} /></span>
+    <span className="brand-symbol"><img src={logo} alt="" /></span>
     <span className="brand-name">Atomic<span>Coders</span></span>
   </div>
 }
@@ -77,6 +78,7 @@ function App() {
   const [modal, setModal] = useState('')
   const [mobileNav, setMobileNav] = useState(false)
   const [newTask, setNewTask] = useState({ title: '', description: '', assigned_to: '', deadline: '' })
+  const [editingTask, setEditingTask] = useState(null)
   const [submission, setSubmission] = useState({ task: null, link: '' })
   const [newMember, setNewMember] = useState({ name: '', email: '', password: '' })
   const [memberDraft, setMemberDraft] = useState(null)
@@ -213,7 +215,7 @@ function App() {
     }
     const { data, error } = await supabase.functions.invoke('member-login', { body: { name: loginName.trim(), password: loginPassword } })
     if (error || !data?.session || !data?.member) {
-      setLoginError(data?.error || 'That name and password did not match.')
+      setLoginError(data?.error || (error ? `Sign-in service error: ${error.message}` : 'That name and password did not match.'))
       return
     }
     const { error: sessionError } = await supabase.auth.setSession(data.session)
@@ -251,21 +253,62 @@ function App() {
     navigate('leader')
   }
 
-  async function addTask(event) {
+  async function saveTask(event) {
     event.preventDefault()
-    if (isDemo) {
-      const task = { ...newTask, deadline: new Date(newTask.deadline).toISOString(), id: crypto.randomUUID(), status: 'pending', submission_link: '', created_at: new Date().toISOString(), completed_at: null }
+    const taskFields = { ...newTask, deadline: new Date(newTask.deadline).toISOString() }
+    let activityWarning = ''
+    if (editingTask && isDemo) {
+      setTasks((current) => current.map((task) => task.id === editingTask.id ? { ...task, ...taskFields } : task))
+      setActivity((current) => [{ id: crypto.randomUUID(), description: `Updated “${newTask.title}”.`, created_at: new Date().toISOString() }, ...current])
+    } else if (isDemo) {
+      const task = { ...taskFields, id: crypto.randomUUID(), status: 'pending', submission_link: '', created_at: new Date().toISOString(), completed_at: null }
       setTasks((current) => [task, ...current])
       setActivity((current) => [{ id: crypto.randomUUID(), description: `Assigned “${task.title}” to ${member(task.assigned_to)?.name}.`, created_at: new Date().toISOString() }, ...current])
-    } else {
-      const { data: createdTask, error } = await supabase.from('tasks').insert({ ...newTask, deadline: new Date(newTask.deadline).toISOString() }).select('id').single()
+    } else if (editingTask) {
+      const { error } = await supabase.from('tasks').update(taskFields).eq('id', editingTask.id)
       if (error) return setToast(error.message)
-      await supabase.from('activity_logs').insert({ actor_id: user.id, member_id: newTask.assigned_to, task_id: createdTask.id, action: 'task_created', description: `Assigned “${newTask.title}” to ${member(newTask.assigned_to)?.name}.` })
+      const { error: activityError } = await supabase.from('activity_logs').insert({
+        actor_id: user.id, member_id: newTask.assigned_to, task_id: editingTask.id,
+        action: 'task_updated', description: `Updated “${newTask.title}”.`,
+      })
+      await refreshLiveData()
+      if (activityError) setToast(`Task updated, but its activity could not be recorded: ${activityError.message}`)
+    } else {
+      const { data: createdTask, error } = await supabase.from('tasks').insert(taskFields).select('id').single()
+      if (error) return setToast(error.message)
+      const { error: activityError } = await supabase.from('activity_logs').insert({ actor_id: user.id, member_id: newTask.assigned_to, task_id: createdTask.id, action: 'task_created', description: `Assigned “${newTask.title}” to ${member(newTask.assigned_to)?.name}.` })
+      if (activityError) activityWarning = `Task assigned, but its activity could not be recorded: ${activityError.message}`
       await refreshLiveData()
     }
     setModal('')
+    setEditingTask(null)
     setNewTask({ title: '', description: '', assigned_to: '', deadline: '' })
-    setToast('Task assigned. The member will be notified on their next refresh.')
+    if (!editingTask) setToast(activityWarning || 'Task assigned. The member will be notified on their next refresh.')
+    else if (isDemo) setToast('Task updated.')
+  }
+
+  function editTask(task) {
+    setEditingTask(task)
+    setNewTask({ title: task.title, description: task.description || '', assigned_to: task.assigned_to || '', deadline: task.deadline })
+    setModal('edit-task')
+  }
+
+  async function deleteTask(task) {
+    if (!window.confirm(`Remove “${task.title}” from the task list?`)) return
+    if (isDemo) {
+      setTasks((current) => current.filter((item) => item.id !== task.id))
+      setActivity((current) => [{ id: crypto.randomUUID(), description: `Removed “${task.title}”.`, created_at: new Date().toISOString() }, ...current])
+    } else {
+      const { error } = await supabase.from('tasks').delete().eq('id', task.id)
+      if (error) return setToast(error.message)
+      const { error: activityError } = await supabase.from('activity_logs').insert({
+        actor_id: user.id, member_id: task.assigned_to, action: 'task_deleted',
+        description: `Removed “${task.title}”.`,
+      })
+      await refreshLiveData()
+      if (activityError) return setToast(`Task removed, but its activity could not be recorded: ${activityError.message}`)
+    }
+    setToast('Task removed.')
   }
 
   async function reviewTask(task, approve) {
@@ -404,13 +447,13 @@ function App() {
         {overdueTasks.length > 0 && <div className="alert-banner"><span className="alert-pulse" /><div><strong>{overdueTasks.length} task{overdueTasks.length > 1 ? 's are' : ' is'} past the deadline</strong><span>{isLeader ? 'Overdue points are recorded automatically.' : 'A red point has been recorded for each overdue task.'}</span></div><button onClick={() => isLeader ? navigate('leader') : setFilter('overdue')}>Review tasks <ChevronRight size={14} /></button></div>}
 
         {!showLeaderView && view === 'dashboard' && <Dashboard user={user} isLeader={isLeader} tasks={myTasks} members={members} now={now} doneCount={doneCount} completionRate={completionRate} activityChart={activityChart} onSubmit={(task) => { setSubmission({ task, link: task.submission_link || '' }); setModal('submission') }} onNavigate={navigate} />}
-        {showLeaderView && <LeaderConsole tasks={tasks} members={members} filteredTasks={filteredTasks} filter={filter} setFilter={setFilter} search={search} setSearch={setSearch} member={member} weeklyTasks={weeklyTasks} weeklyCompletions={weeklyCompletions} weeklyOverdue={weeklyOverdue} onAddTask={() => setModal('task')} onAddMember={() => { setMemberDraft(null); setModal('member') }} onEditMember={(person) => { setMemberDraft({ ...person }); setModal('edit-member') }} onDeleteMember={deleteMember} onReview={reviewTask} onSubmitLink={(task) => window.open(task.submission_link, '_blank', 'noopener,noreferrer')} />}
+        {showLeaderView && <LeaderConsole tasks={tasks} members={members} filteredTasks={filteredTasks} filter={filter} setFilter={setFilter} search={search} setSearch={setSearch} member={member} weeklyTasks={weeklyTasks} weeklyCompletions={weeklyCompletions} weeklyOverdue={weeklyOverdue} onAddTask={() => { setEditingTask(null); setNewTask({ title: '', description: '', assigned_to: '', deadline: '' }); setModal('task') }} onEditTask={editTask} onDeleteTask={deleteTask} onAddMember={() => { setMemberDraft(null); setModal('member') }} onEditMember={(person) => { setMemberDraft({ ...person }); setModal('edit-member') }} onDeleteMember={deleteMember} onReview={reviewTask} onSubmitLink={(task) => window.open(task.submission_link, '_blank', 'noopener,noreferrer')} />}
         {view === 'leaderboard' && <Leaderboard members={sortedMembers} tasks={tasks} member={member} />}
         {view === 'activity' && <ActivityPage activity={activity} tasks={tasks} members={members} isDemo={isDemo} />}
       </div>
     </main>
-    {modal && <Modal onClose={() => setModal('')} title={modal === 'task' ? 'Create a task' : modal === 'submission' ? 'Submit your work' : modal === 'edit-member' ? 'Edit team member' : 'Add a team member'}>
-      {modal === 'task' && <form className="form-stack" onSubmit={addTask}><label>Task title<input required autoFocus value={newTask.title} onChange={(event) => setNewTask({ ...newTask, title: event.target.value })} placeholder="e.g. Ship the new onboarding flow" /></label><label>Description<textarea rows="3" value={newTask.description} onChange={(event) => setNewTask({ ...newTask, description: event.target.value })} placeholder="What does done look like?" /></label><div className="form-two"><label>Assign to<select required value={newTask.assigned_to} onChange={(event) => setNewTask({ ...newTask, assigned_to: event.target.value })}><option value="">Choose a teammate</option>{members.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label><label>Deadline<input required type="datetime-local" value={newTask.deadline} onChange={(event) => setNewTask({ ...newTask, deadline: event.target.value ? new Date(event.target.value).toISOString() : '' })} /></label></div><ModalActions onCancel={() => setModal('')} submit="Assign task" /></form>}
+    {modal && <Modal onClose={() => setModal('')} title={modal === 'edit-task' ? 'Edit task' : modal === 'task' ? 'Create a task' : modal === 'submission' ? 'Submit your work' : modal === 'edit-member' ? 'Edit team member' : 'Add a team member'}>
+      {(modal === 'task' || modal === 'edit-task') && <form className="form-stack" onSubmit={saveTask}><label>Task title<input required autoFocus value={newTask.title} onChange={(event) => setNewTask({ ...newTask, title: event.target.value })} placeholder="e.g. Ship the new onboarding flow" /></label><label>Description<textarea rows="3" value={newTask.description} onChange={(event) => setNewTask({ ...newTask, description: event.target.value })} placeholder="What does done look like?" /></label><div className="form-two"><label>Assign to<select required value={newTask.assigned_to} onChange={(event) => setNewTask({ ...newTask, assigned_to: event.target.value })}><option value="">Choose a teammate</option>{members.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label><label>Deadline<input required type="datetime-local" value={newTask.deadline} onChange={(event) => setNewTask({ ...newTask, deadline: event.target.value ? new Date(event.target.value).toISOString() : '' })} /></label></div><ModalActions onCancel={() => setModal('')} submit={editingTask ? 'Save changes' : 'Assign task'} /></form>}
       {modal === 'submission' && <form className="form-stack" onSubmit={submitTask}><p className="modal-copy">Share a link to your finished work. Your teammate lead will review it.</p><label>Work link<input autoFocus required type="url" value={submission.link} onChange={(event) => setSubmission({ ...submission, link: event.target.value })} placeholder="https://github.com/..." /></label><ModalActions onCancel={() => setModal('')} submit="Send for review" /></form>}
       {(modal === 'member' || modal === 'edit-member') && <form className="form-stack" onSubmit={saveMember}><label>Full name<input required autoFocus value={memberDraft?.name ?? newMember.name} onChange={(event) => memberDraft ? setMemberDraft({ ...memberDraft, name: event.target.value }) : setNewMember({ ...newMember, name: event.target.value })} placeholder="Name" /></label><label>Email<input required type="email" value={memberDraft?.email ?? newMember.email} onChange={(event) => memberDraft ? setMemberDraft({ ...memberDraft, email: event.target.value }) : setNewMember({ ...newMember, email: event.target.value })} placeholder="name@team.com" /></label>{!memberDraft && <label>Temporary password<input required minLength="8" type="password" value={newMember.password} onChange={(event) => setNewMember({ ...newMember, password: event.target.value })} placeholder="At least 8 characters" /></label>}<ModalActions onCancel={() => setModal('')} submit={memberDraft ? 'Save changes' : 'Add member'} /></form>}
     </Modal>}
@@ -452,7 +495,7 @@ function StatCard({ label, value, note, icon, tone }) {
   return <section className={`stat-card stat-${tone}`}><div className="stat-top"><span>{label}</span><span className="stat-icon">{icon}</span></div><strong>{value}</strong><div className="stat-note"><i />{note}</div></section>
 }
 
-function LeaderConsole({ tasks, members, filteredTasks, filter, setFilter, search, setSearch, member, weeklyTasks, weeklyCompletions, weeklyOverdue, onAddTask, onAddMember, onEditMember, onDeleteMember, onReview, onSubmitLink }) {
+function LeaderConsole({ tasks, members, filteredTasks, filter, setFilter, search, setSearch, member, weeklyTasks, weeklyCompletions, weeklyOverdue, onAddTask, onEditTask, onDeleteTask, onAddMember, onEditMember, onDeleteMember, onReview, onSubmitLink }) {
   const completed = tasks.filter((task) => task.status === 'completed').length
   const progress = tasks.length ? Math.round((completed / tasks.length) * 100) : 0
   const chartSeed = Array.from({ length: 7 }, (_, index) => {
@@ -466,7 +509,7 @@ function LeaderConsole({ tasks, members, filteredTasks, filter, setFilter, searc
       red: tasks.filter((task) => task.status === 'overdue' && sameDay(task.deadline)).length,
     }
   })
-  return <><div className="page-heading"><div><span className="eyebrow">RESTRICTED / LEADER ACCESS</span><h1>Team console<span className="heading-period">.</span></h1><p>Keep the team moving, one task at a time.</p></div><button className="primary-button heading-cta" onClick={onAddTask}><Plus size={16} /> New task</button></div><div className="leader-stats stats-grid"><StatCard label="ACTIVE TASKS" value={tasks.filter((task) => !['completed', 'overdue'].includes(task.status)).length.toString().padStart(2, '0')} note="Across the team" icon={<ListTodo size={16} />} tone="acid" /><StatCard label="TEAM COMPLETION" value={`${progress}%`} note={`${completed} tasks delivered`} icon={<CheckCheck size={16} />} tone="mint" /><StatCard label="OVERDUE" value={tasks.filter((task) => task.status === 'overdue').length.toString().padStart(2, '0')} note="Red points applied" icon={<Clock3 size={16} />} tone="coral" /><StatCard label="TEAM MEMBERS" value={members.length.toString().padStart(2, '0')} note="In your workspace" icon={<Users size={16} />} tone="mint" /></div><div className="leader-grid"><section className="surface team-analytics"><div className="section-heading"><div><span className="eyebrow">WEEKLY SNAPSHOT</span><h2>Team progress</h2></div><span className="period-chip">LAST 7 DAYS <ChevronDown size={13} /></span></div><div className="analytics-summary"><div><strong>{weeklyCompletions}</strong><span>completed</span></div><div><strong>{weeklyTasks.length}</strong><span>assigned</span></div><div><strong className="coral-text">{weeklyOverdue}</strong><span>overdue</span></div><div className="analytics-trend"><ArrowUpRight size={15} /> Weekly report</div></div><div className="leader-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={chartSeed} margin={{ top: 10, right: 6, bottom: 0, left: -24 }}><CartesianGrid vertical={false} stroke="var(--chart-grid)" strokeDasharray="3 5" /><XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fill: 'var(--muted)', fontSize: 10 }} /><YAxis axisLine={false} tickLine={false} tick={{ fill: 'var(--muted)', fontSize: 10 }} /><Tooltip contentStyle={{ background: 'var(--surface-raised)', border: '1px solid var(--line)', borderRadius: 8, color: 'var(--text)', fontSize: 12 }} /><Bar dataKey="green" name="Completed" fill="#d8ff48" radius={[3, 3, 0, 0]} barSize={14} /><Bar dataKey="red" name="Overdue" fill="#ff6f64" radius={[3, 3, 0, 0]} barSize={14} /></BarChart></ResponsiveContainer></div><p className="report-copy"><Zap size={14} /> This week: <strong>{weeklyCompletions} delivered</strong> from {weeklyTasks.length} assigned, with {weeklyOverdue} overdue.</p></section><section className="surface team-members"><div className="section-heading"><div><span className="eyebrow">THE CREW</span><h2>Team members</h2></div><button className="icon-button add-icon" onClick={onAddMember} aria-label="Add team member"><Plus size={17} /></button></div><div className="member-table-list">{members.map((person) => <div className="member-manage-row" key={person.id}><Avatar member={person} size="small" /><div className="member-manage-name"><strong>{person.name}</strong><span>{person.role === 'leader' ? 'Team leader' : 'Member'}</span></div><div className="member-points"><strong>{person.green_points}<span> GP</span></strong><small><b>{person.red_points}</b> RP</small></div><button className="icon-button member-menu" onClick={() => onEditMember(person)} aria-label={`Edit ${person.name}`}><Settings2 size={15} /></button><button className="icon-button member-menu member-delete" onClick={() => onDeleteMember(person)} aria-label={`Remove ${person.name}`}><Trash2 size={14} /></button></div>)}</div><button className="add-member-button" onClick={onAddMember}><Plus size={15} /> Add a teammate</button></section></div><section className="surface task-table-surface"><div className="section-heading table-heading"><div><span className="eyebrow">WORK TRACKER</span><h2>All tasks <span className="count-badge">{filteredTasks.length}</span></h2></div><button className="primary-button compact-primary" onClick={onAddTask}><Plus size={15} /> Create task</button></div><div className="table-controls"><div className="filter-tabs">{[['all', 'All'], ['pending', 'To do'], ['overdue', 'Overdue'], ['completed', 'Completed']].map(([value, label]) => <button key={value} className={filter === value ? 'filter-active' : ''} onClick={() => setFilter(value)}>{label}{value === 'overdue' && <i className="filter-alert" />}</button>)}</div><label className="search-box"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tasks" /><Filter size={14} /></label></div><div className="task-table-wrap"><table className="task-table"><thead><tr><th>TASK</th><th>ASSIGNED TO</th><th>DEADLINE</th><th>STATUS</th><th>SUBMISSION</th><th /></tr></thead><tbody>{filteredTasks.map((task) => { const assigned = member(task.assigned_to); return <tr key={task.id}><td><strong className="table-task-title">{task.title}</strong><span className="table-task-desc">{task.description}</span></td><td><span className="table-person">{assigned && <Avatar member={assigned} size="tiny" />}{assigned?.name || 'Unassigned'}</span></td><td><span className="table-deadline">{formatDeadline(task.deadline)}</span></td><td><span className={`status-chip status-chip-${task.status}`}>{statusLabel[task.status] || task.status}</span></td><td>{task.submission_link ? <button className="link-button" onClick={() => onSubmitLink(task)}><ExternalLink size={13} /> Open link</button> : <span className="muted-dash">—</span>}</td><td>{task.status === 'submitted' && <div className="review-actions"><button className="approve-button" onClick={() => onReview(task, true)} aria-label="Approve task"><Check size={15} /></button><button className="reject-button" onClick={() => onReview(task, false)} aria-label="Return task"><X size={15} /></button></div>}</td></tr>})}{!filteredTasks.length && <tr><td colSpan="6" className="table-empty">No tasks match these filters.</td></tr>}</tbody></table></div></section></>
+  return <><div className="page-heading"><div><span className="eyebrow">RESTRICTED / LEADER ACCESS</span><h1>Team console<span className="heading-period">.</span></h1><p>Keep the team moving, one task at a time.</p></div><button className="primary-button heading-cta" onClick={onAddTask}><Plus size={16} /> New task</button></div><div className="leader-stats stats-grid"><StatCard label="ACTIVE TASKS" value={tasks.filter((task) => !['completed', 'overdue'].includes(task.status)).length.toString().padStart(2, '0')} note="Across the team" icon={<ListTodo size={16} />} tone="acid" /><StatCard label="TEAM COMPLETION" value={`${progress}%`} note={`${completed} tasks delivered`} icon={<CheckCheck size={16} />} tone="mint" /><StatCard label="OVERDUE" value={tasks.filter((task) => task.status === 'overdue').length.toString().padStart(2, '0')} note="Red points applied" icon={<Clock3 size={16} />} tone="coral" /><StatCard label="TEAM MEMBERS" value={members.length.toString().padStart(2, '0')} note="In your workspace" icon={<Users size={16} />} tone="mint" /></div><div className="leader-grid"><section className="surface team-analytics"><div className="section-heading"><div><span className="eyebrow">WEEKLY SNAPSHOT</span><h2>Team progress</h2></div><span className="period-chip">LAST 7 DAYS <ChevronDown size={13} /></span></div><div className="analytics-summary"><div><strong>{weeklyCompletions}</strong><span>completed</span></div><div><strong>{weeklyTasks.length}</strong><span>assigned</span></div><div><strong className="coral-text">{weeklyOverdue}</strong><span>overdue</span></div><div className="analytics-trend"><ArrowUpRight size={15} /> Weekly report</div></div><div className="leader-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={chartSeed} margin={{ top: 10, right: 6, bottom: 0, left: -24 }}><CartesianGrid vertical={false} stroke="var(--chart-grid)" strokeDasharray="3 5" /><XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fill: 'var(--muted)', fontSize: 10 }} /><YAxis axisLine={false} tickLine={false} tick={{ fill: 'var(--muted)', fontSize: 10 }} /><Tooltip contentStyle={{ background: 'var(--surface-raised)', border: '1px solid var(--line)', borderRadius: 8, color: 'var(--text)', fontSize: 12 }} /><Bar dataKey="green" name="Completed" fill="var(--acid)" radius={[3, 3, 0, 0]} barSize={14} /><Bar dataKey="red" name="Overdue" fill="#ff6f64" radius={[3, 3, 0, 0]} barSize={14} /></BarChart></ResponsiveContainer></div><p className="report-copy"><Zap size={14} /> This week: <strong>{weeklyCompletions} delivered</strong> from {weeklyTasks.length} assigned, with {weeklyOverdue} overdue.</p></section><section className="surface team-members"><div className="section-heading"><div><span className="eyebrow">THE CREW</span><h2>Team members</h2></div><button className="icon-button add-icon" onClick={onAddMember} aria-label="Add team member"><Plus size={17} /></button></div><div className="member-table-list">{members.map((person) => <div className="member-manage-row" key={person.id}><Avatar member={person} size="small" /><div className="member-manage-name"><strong>{person.name}</strong><span>{person.role === 'leader' ? 'Team leader' : 'Member'}</span></div><div className="member-points"><strong>{person.green_points}<span> GP</span></strong><small><b>{person.red_points}</b> RP</small></div><button className="icon-button member-menu" onClick={() => onEditMember(person)} aria-label={`Edit ${person.name}`}><Settings2 size={15} /></button><button className="icon-button member-menu member-delete" onClick={() => onDeleteMember(person)} aria-label={`Remove ${person.name}`}><Trash2 size={14} /></button></div>)}</div><button className="add-member-button" onClick={onAddMember}><Plus size={15} /> Add a teammate</button></section></div><section className="surface task-table-surface"><div className="section-heading table-heading"><div><span className="eyebrow">WORK TRACKER</span><h2>All tasks <span className="count-badge">{filteredTasks.length}</span></h2></div><button className="primary-button compact-primary" onClick={onAddTask}><Plus size={15} /> Create task</button></div><div className="table-controls"><div className="filter-tabs">{[['all', 'All'], ['pending', 'To do'], ['in_progress', 'In progress'], ['submitted', 'In review'], ['overdue', 'Overdue'], ['completed', 'Completed']].map(([value, label]) => <button key={value} className={filter === value ? 'filter-active' : ''} onClick={() => setFilter(value)}>{label}{value === 'overdue' && <i className="filter-alert" />}</button>)}</div><label className="search-box"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tasks" /><Filter size={14} /></label></div><div className="task-table-wrap"><table className="task-table"><thead><tr><th>TASK</th><th>ASSIGNED TO</th><th>DEADLINE</th><th>STATUS</th><th>SUBMISSION</th><th /></tr></thead><tbody>{filteredTasks.map((task) => { const assigned = member(task.assigned_to); return <tr key={task.id}><td><strong className="table-task-title">{task.title}</strong><span className="table-task-desc">{task.description}</span></td><td><span className="table-person">{assigned && <Avatar member={assigned} size="tiny" />}{assigned?.name || 'Unassigned'}</span></td><td><span className="table-deadline">{formatDeadline(task.deadline)}</span></td><td><span className={`status-chip status-chip-${task.status}`}>{statusLabel[task.status] || task.status}</span></td><td>{task.submission_link ? <button className="link-button" onClick={() => onSubmitLink(task)}><ExternalLink size={13} /> Open link</button> : <span className="muted-dash">—</span>}</td><td><div className="review-actions">{task.status === 'submitted' && <><button className="approve-button" onClick={() => onReview(task, true)} aria-label="Approve task"><Check size={15} /></button><button className="reject-button" onClick={() => onReview(task, false)} aria-label="Return task"><X size={15} /></button></>}<button className="icon-button task-action" onClick={() => onEditTask(task)} aria-label={`Edit ${task.title}`}><Pencil size={14} /></button><button className="icon-button task-action task-delete" onClick={() => onDeleteTask(task)} aria-label={`Remove ${task.title}`}><Trash2 size={14} /></button></div></td></tr>})}{!filteredTasks.length && <tr><td colSpan="6" className="table-empty">No tasks match these filters.</td></tr>}</tbody></table></div></section></>
 }
 
 function Leaderboard({ members, tasks, member }) {
